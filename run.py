@@ -6,7 +6,9 @@
   python run.py --core-only
   python run.py --probe
   python run.py --setup-drive
-  python run.py --sync-only
+  python run.py --reviews
+  python run.py --rounds
+  python run.py --reviews --rounds
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import sys
 from ff.client import AuthError
 from ff.clusters import select_projects
 from ff.drive import setup_oauth
-from ff.runner import ROOT, configure_logging, load_settings, open_tools, run_clusters, _utf8_stdio
+from ff.runner import ROOT, configure_logging, load_settings, open_tools, run_clusters, run_sections, _utf8_stdio
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,6 +31,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=30, choices=(10, 20, 30))
     parser.add_argument("--setup-drive", action="store_true", help="один раз войти в Google Диск")
     parser.add_argument("--sync-only", action="store_true", help="выгрузить уже собранное в папку на Диске")
+    parser.add_argument("--reviews", action="store_true", help="лента обзоров /news/ и полный текст каждой статьи")
+    parser.add_argument("--rounds", action="store_true", help="лента раундов /deals/")
+    parser.add_argument("--max-pages", type=int, default=400, help="сколько страниц ленты брать в одном разделе")
     args = parser.parse_args(argv)
 
     configure_logging(ROOT)
@@ -48,16 +53,24 @@ def main(argv: list[str] | None = None) -> int:
                 drive.sync_file(path, f"md/{path.name}")
             print("Локальный экспорт обновлён. Если Диск подключён, файлы ушли в папку.")
             return 0
-        projects = select_projects(args.project)
-        run_clusters(
-            store,
-            client,
-            drive,
-            projects,
-            include_adjacent=not args.core_only,
-            limit=args.limit,
-            probe=args.probe,
-        )
+        if args.reviews or args.rounds:
+            sections = []
+            if args.reviews:
+                sections.append("news")
+            if args.rounds:
+                sections.append("deals")
+            run_sections(store, client, drive, sections, args.max_pages)
+        else:
+            projects = select_projects(args.project)
+            run_clusters(
+                store,
+                client,
+                drive,
+                projects,
+                include_adjacent=not args.core_only,
+                limit=args.limit,
+                probe=args.probe,
+            )
     except AuthError as exc:
         print(exc)
         return 2

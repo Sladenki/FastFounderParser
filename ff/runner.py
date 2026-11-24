@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 from pathlib import Path
@@ -196,6 +197,9 @@ def _fetch_article(store, client, drive, url: str, project: str, query: str, pay
         log.warning("Полный обзор закрыт сессией, дальше качаю только карточки")
         return True
     article = parse_article(response.text)
+    if article.get("missing"):
+        log.info("Пропуск страницы без текста обзора")
+        return paywall_locked
     article["url"] = url
     article["source"] = "review"
     article["external_url"] = ""
@@ -236,6 +240,96 @@ def _save(store: Store, drive, payload: dict, project: str, query: str) -> bool:
     store.export_indexes()
     drive.sync_case_files(md_path, store.jsonl_path, store.csv_path)
     return created
+
+
+def run_sections(store: Store, client: PoliteClient, drive, sections: list[str], max_pages: int) -> None:
+    from rich.console import Console
+
+    console = Console()
+    for section in sections:
+        label = "Обзоры" if section == "news" else "Раунды"
+        console.print(f"[bold]{label}[/bold]")
+        _walk_section(store, client, drive, console, section, label, max_pages)
+        store.export_all()
+        drive.sync_database(store.db_path)
+
+
+def _walk_section(store, client, drive, console, section: str, label: str, max_pages: int) -> None:
+    last_fp = ""
+    page = 1
+    failures = 0
+    while page <= max_pages:
+        job_key = f"{section}|page|{page}"
+        if store.job_done(job_key):
+            note = store.job_note(job_key)
+            if note.startswith("end") or note.startswith("repeat"):
+                console.print(f"{label}: страница {page} уже была концом ленты")
+                return
+            if note.startswith("ok "):
+                last_fp = note.split(" ", 1)[1]
+            page += 1
+            continue
+        url = _section_url(section, page)
+        try:
+            response = client.get(url)
+        except FetchError as exc:
+            if "HTTP 404" in str(exc):
+                store.mark_job(job_key, "done", "end")
+                console.print(f"{label}: страницы закончились на {page}")
+                return
+            failures += 1
+            store.mark_job(job_key, "error", str(exc)[:300])
+            console.print(f"[yellow]{label}, страница {page}: {exc}[/yellow]")
+            if failures >= 3:
+                console.print("[red]Три ошибки подряд. Останавливаю этот раздел.[/red]")
+                return
+            page += 1
+            continue
+        failures = 0
+        if section == "news":
+            keys = extract_article_links(response.text)
+        else:
+            keys = [card["url"] for card in parse_company_cards(response.text)]
+        fingerprint = hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()[:16]
+        if not keys or fingerprint == last_fp:
+            store.mark_job(job_key, "done", "repeat" if keys else "end")
+            console.print(f"{label}: лента остановилась на странице {page}")
+            return
+        saved = 0
+        if section == "news":
+            paywall_locked = False
+            for article_url in keys:
+                if paywall_locked:
+                    break
+                before = store.count()
+                paywall_locked = _fetch_article(store, client, drive, article_url, label, f"news/{page}", paywall_locked)
+                if store.count() > before:
+                    saved += 1
+            if paywall_locked:
+                store.mark_job(job_key, "error", "paywall")
+                console.print("[red]Полный текст обзора закрыт. Обнови cookie и запусти сбор обзоров снова.[/red]")
+                return
+        else:
+            for card in parse_company_cards(response.text):
+                card["source"] = "round"
+                card.setdefault("site_tags", [])
+                card.setdefault("metrics", "")
+                card.setdefault("section_essence", "")
+                card.setdefault("section_insight", "")
+                card.setdefault("section_action", "")
+                card.setdefault("paywalled", False)
+                if _save(store, drive, card, label, f"deals/{page}"):
+                    saved += 1
+        last_fp = fingerprint
+        store.mark_job(job_key, "done", f"ok {fingerprint}")
+        console.print(f"{label}, страница {page}: новых {saved}, в базе {store.count()}")
+        page += 1
+
+
+def _section_url(section: str, page: int) -> str:
+    if page <= 1:
+        return f"https://fastfounder.ru/{section}/"
+    return f"https://fastfounder.ru/{section}/page/{page}/"
 
 
 def _dump(html: str) -> None:

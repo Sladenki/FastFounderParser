@@ -22,6 +22,7 @@ RESERVED = {
     "privacy-policy",
     "pay_security",
     "howtoread",
+    "prepayment",
     "misc",
     "author",
     "category",
@@ -111,7 +112,7 @@ def parse_company_cards(html: str) -> list[dict]:
 
 def extract_article_links(html: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
-    root = soup.select_one(".entry-content") or soup.body
+    root = soup.select_one(".content-area") or soup.body
     if root is None:
         return []
     found: list[str] = []
@@ -139,7 +140,8 @@ def parse_article(html: str) -> dict:
             "full_text": "",
             "snippet": "",
             "site_tags": [],
-            "paywalled": True,
+            "paywalled": False,
+            "missing": True,
             "section_essence": "",
             "section_insight": "",
             "section_action": "",
@@ -155,7 +157,7 @@ def parse_article(html: str) -> dict:
         if label and label not in tags:
             tags.append(label)
     sections = _split_sections(full_text)
-    paywalled = PAYWALL in full_text and not sections["section_essence"]
+    paywalled = PAYWALL in full_text
     round_info = _round_line(full_text)
     return {
         "title": title,

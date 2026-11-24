@@ -67,6 +67,12 @@ class Store:
         row = self.conn.execute("SELECT status FROM jobs WHERE job_key = ?", (job_key,)).fetchone()
         return bool(row and row["status"] == "done")
 
+    def job_note(self, job_key: str) -> str:
+        row = self.conn.execute("SELECT note FROM jobs WHERE job_key = ?", (job_key,)).fetchone()
+        if row is None or not row["note"]:
+            return ""
+        return str(row["note"])
+
     def mark_job(self, job_key: str, status: str, note: str = "") -> None:
         self.conn.execute(
             """
@@ -107,7 +113,12 @@ class Store:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(url) DO UPDATE SET
                 title = COALESCE(NULLIF(excluded.title, ''), cases.title),
-                source = CASE WHEN excluded.source != '' THEN excluded.source ELSE cases.source END,
+                source = CASE
+                    WHEN excluded.source = '' THEN cases.source
+                    WHEN cases.source = '' OR cases.source IS NULL THEN excluded.source
+                    WHEN instr(cases.source, excluded.source) > 0 THEN cases.source
+                    ELSE cases.source || '+' || excluded.source
+                END,
                 external_url = COALESCE(NULLIF(excluded.external_url, ''), cases.external_url),
                 review_url = COALESCE(NULLIF(excluded.review_url, ''), cases.review_url),
                 snippet = CASE
